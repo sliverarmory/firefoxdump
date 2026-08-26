@@ -1,0 +1,406 @@
+name: Package
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE_BASENAME: firefoxdump
+
+jobs:
+  build:
+    name: Build package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Derive exact package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version=v0.0.0
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            package_version="$GITHUB_REF_NAME"
+            if [[ ! "$package_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Tag must have the exact form vMAJOR.MINOR.PATCH" >&2
+              exit 1
+            fi
+            if [[ "$(git rev-list -n 1 "$package_version")" != "$(git rev-parse HEAD)" ]]; then
+              echo "Tag does not resolve to the checked-out commit" >&2
+              exit 1
+            fi
+          fi
+          echo "PACKAGE_VERSION=$package_version" >> "$GITHUB_ENV"
+
+      - name: Install pinned MinGW toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          readonly -a packages=(
+            'binutils-mingw-w64-i686=2.41.90.20240122-1ubuntu1+11.4'
+            'binutils-mingw-w64-x86-64=2.41.90.20240122-1ubuntu1+11.4'
+            'gcc-mingw-w64-base=13.2.0-6ubuntu1+26.1'
+            'gcc-mingw-w64-i686-win32-runtime=13.2.0-6ubuntu1+26.1'
+            'gcc-mingw-w64-i686-win32=13.2.0-6ubuntu1+26.1'
+            'gcc-mingw-w64-x86-64-win32-runtime=13.2.0-6ubuntu1+26.1'
+            'gcc-mingw-w64-x86-64-win32=13.2.0-6ubuntu1+26.1'
+            'make=4.3-4.1build2'
+            'mingw-w64-common=11.0.1-3build1'
+            'mingw-w64-i686-dev=11.0.1-3build1'
+            'mingw-w64-x86-64-dev=11.0.1-3build1'
+          )
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "${packages[@]}"
+          sudo update-alternatives --set \
+            i686-w64-mingw32-gcc \
+            /usr/bin/i686-w64-mingw32-gcc-win32
+          sudo update-alternatives --set \
+            x86_64-w64-mingw32-gcc \
+            /usr/bin/x86_64-w64-mingw32-gcc-win32
+
+          test "$(update-alternatives --query i686-w64-mingw32-gcc | sed -n 's/^Value: //p')" \
+            = /usr/bin/i686-w64-mingw32-gcc-win32
+          test "$(update-alternatives --query x86_64-w64-mingw32-gcc | sed -n 's/^Value: //p')" \
+            = /usr/bin/x86_64-w64-mingw32-gcc-win32
+          test "$(i686-w64-mingw32-gcc -dumpmachine)" = i686-w64-mingw32
+          test "$(x86_64-w64-mingw32-gcc -dumpmachine)" = x86_64-w64-mingw32
+          test "$(i686-w64-mingw32-gcc -dumpfullversion)" = 13-win32
+          test "$(x86_64-w64-mingw32-gcc -dumpfullversion)" = 13-win32
+          test "$(i686-w64-mingw32-gcc -v 2>&1 | sed -n 's/^[[:space:]]*Thread model: //p')" = win32
+          test "$(x86_64-w64-mingw32-gcc -v 2>&1 | sed -n 's/^[[:space:]]*Thread model: //p')" = win32
+
+          for spec in "${packages[@]}"; do
+            package="${spec%%=*}"
+            expected="${spec#*=}"
+            actual="$(dpkg-query --show --showformat='${Version}' "$package")"
+            if [[ "$actual" != "$expected" ]]; then
+              printf 'version mismatch: %s expected %s got %s\n' \
+                "$package" "$expected" "$actual" >&2
+              exit 1
+            fi
+            printf '%s=%s\n' "$package" "$actual"
+          done
+
+      - name: Build deterministic unsigned package
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          python3 scripts/package.py --tag "$PACKAGE_VERSION" --output-dir release
+          python3 scripts/validate_archive.py \
+            --archive "release/$PACKAGE_BASENAME.tar.gz" \
+            --tag "$PACKAGE_VERSION" \
+            --inspect-objects
+
+          second_source="$RUNNER_TEMP/reproducibility-source"
+          second_output="$RUNNER_TEMP/reproducibility-output"
+          mkdir -p "$second_source"
+          git archive HEAD | tar -x -C "$second_source"
+          python3 "$second_source/scripts/package.py" \
+            --tag "$PACKAGE_VERSION" \
+            --output-dir "$second_output"
+          cmp \
+            "release/$PACKAGE_BASENAME.tar.gz" \
+            "$second_output/$PACKAGE_BASENAME.tar.gz"
+          tar -tzf "release/$PACKAGE_BASENAME.tar.gz"
+          sha256sum "release/$PACKAGE_BASENAME.tar.gz"
+
+      - name: Upload unsigned package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-package
+          path: release/firefoxdump.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Sign and publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: armory-release
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download unsigned package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-package
+          path: release
+
+      - name: Install pinned Minisign
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends minisign=0.11-1
+          test "$(dpkg-query --show --showformat='${Version}' minisign)" = 0.11-1
+          minisign -v
+
+      - name: Revalidate tag and unsigned archive
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag must have the exact form vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-list -n 1 "$GITHUB_REF_NAME")" != "$(git rev-parse HEAD)" ]]; then
+            echo "Tag does not resolve to the checked-out commit" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "Tag commit is not contained in origin/main" >&2
+            exit 1
+          fi
+          immutable_releases="$(gh api \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled)"
+          if [[ "$immutable_releases" != true ]]; then
+            echo "Repository immutable releases must be enabled before signing" >&2
+            exit 1
+          fi
+          existing_release_id="$(gh api \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .id")"
+          if [[ -n "$existing_release_id" ]]; then
+            echo "Release $GITHUB_REF_NAME already exists" >&2
+            exit 1
+          fi
+          python3 scripts/validate_archive.py \
+            --archive "release/$PACKAGE_BASENAME.tar.gz" \
+            --tag "$GITHUB_REF_NAME"
+          tar -xOzf "release/$PACKAGE_BASENAME.tar.gz" ./extension.json \
+            > "$RUNNER_TEMP/extension.json"
+          base64 -w0 "$RUNNER_TEMP/extension.json" > "$RUNNER_TEMP/manifest.b64"
+
+      - name: Sign and verify package
+        shell: bash
+        env:
+          MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          key_file="$RUNNER_TEMP/minisign.key"
+          trap 'rm -f "$key_file"' EXIT
+          archive="release/$PACKAGE_BASENAME.tar.gz"
+          signature="release/$PACKAGE_BASENAME.minisig"
+          test -n "$MINISIGN_PRIVATE_KEY"
+          printf '%s' "$MINISIGN_PRIVATE_KEY" > "$key_file"
+          unset MINISIGN_PRIVATE_KEY
+
+          public_key="$(sed -n '2p' minisign.pub)"
+          manifest_b64="$(cat "$RUNNER_TEMP/manifest.b64")"
+          minisign -S -s "$key_file" -m "$archive" -x "$signature" -t "$manifest_b64"
+          minisign -V -P "$public_key" -m "$archive" -x "$signature"
+          trusted_manifest="$(sed -n '3s/^trusted comment: //p' "$signature")"
+          test "$trusted_manifest" = "$manifest_b64"
+
+      - name: Remove signing key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/minisign.key"
+
+      - name: Validate signed package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_archive.py \
+            --archive "release/$PACKAGE_BASENAME.tar.gz" \
+            --tag "$GITHUB_REF_NAME"
+          python3 scripts/validate_signature.py \
+            --archive "release/$PACKAGE_BASENAME.tar.gz" \
+            --signature "release/$PACKAGE_BASENAME.minisig" \
+            --public-key-file minisign.pub \
+            --tag "$GITHUB_REF_NAME"
+
+      - name: Stage draft release
+        id: stage_release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            "release/$PACKAGE_BASENAME.tar.gz" \
+            "release/$PACKAGE_BASENAME.minisig" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --verify-tag \
+            --title "$PACKAGE_BASENAME $GITHUB_REF_NAME" \
+            --notes "Signed Sliver Armory package built from commit $GITHUB_SHA."
+
+          release_id="$(gh api \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\" and .draft == true) | .id")"
+          if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+            echo "Could not resolve the staged draft release ID" >&2
+            exit 1
+          fi
+          printf 'release_id=%s\n' "$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: Verify staged release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_id="${{ steps.stage_release.outputs.release_id }}"
+          release_api="repos/$GITHUB_REPOSITORY/releases/$release_id"
+          assets_api="$release_api/assets"
+          draft_dir="$RUNNER_TEMP/draft-release"
+          mkdir -p "$draft_dir"
+
+          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$release_api" --jq .tag_name)" = "$GITHUB_REF_NAME"
+          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$release_api" --jq .draft)" = true
+          expected_assets='["firefoxdump.minisig","firefoxdump.tar.gz"]'
+          actual_assets="$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$assets_api" --jq '[.[].name] | sort')"
+          test "$actual_assets" = "$expected_assets"
+
+          for asset in "$PACKAGE_BASENAME.tar.gz" "$PACKAGE_BASENAME.minisig"; do
+            asset_id="$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "$assets_api" --jq ".[] | select(.name == \"$asset\") | .id")"
+            if [[ ! "$asset_id" =~ ^[0-9]+$ ]]; then
+              echo "Could not resolve staged asset ID for $asset" >&2
+              exit 1
+            fi
+            gh api \
+              -H 'Accept: application/octet-stream' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+              > "$draft_dir/$asset"
+          done
+
+          cmp "release/$PACKAGE_BASENAME.tar.gz" "$draft_dir/$PACKAGE_BASENAME.tar.gz"
+          cmp "release/$PACKAGE_BASENAME.minisig" "$draft_dir/$PACKAGE_BASENAME.minisig"
+          python3 scripts/validate_archive.py \
+            --archive "$draft_dir/$PACKAGE_BASENAME.tar.gz" \
+            --tag "$GITHUB_REF_NAME"
+          python3 scripts/validate_signature.py \
+            --archive "$draft_dir/$PACKAGE_BASENAME.tar.gz" \
+            --signature "$draft_dir/$PACKAGE_BASENAME.minisig" \
+            --public-key-file minisign.pub \
+            --tag "$GITHUB_REF_NAME"
+
+      - name: Publish immutable release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_id="${{ steps.stage_release.outputs.release_id }}"
+          release_api="repos/$GITHUB_REPOSITORY/releases/$release_id"
+          gh api --method PATCH \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$release_api" \
+            -F draft=false \
+            -f make_latest=true \
+            --silent
+          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$release_api" --jq .draft)" = false
+
+      - name: Verify public release assets anonymously
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          public_dir="$RUNNER_TEMP/public-release"
+          mkdir -p "$public_dir"
+          release_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          for asset in "$PACKAGE_BASENAME.tar.gz" "$PACKAGE_BASENAME.minisig"; do
+            downloaded=false
+            for attempt in 1 2 3 4 5; do
+              if curl --fail --location --proto '=https' --tlsv1.2 \
+                --output "$public_dir/$asset" "$release_url/$asset"; then
+                downloaded=true
+                break
+              fi
+              sleep 2
+            done
+            test "$downloaded" = true
+            test -s "$public_dir/$asset"
+          done
+
+          expected_assets='["firefoxdump.minisig","firefoxdump.tar.gz"]'
+          release_api="repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME"
+          actual_assets="$(gh api \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$release_api" --jq '[.assets[].name] | sort')"
+          test "$actual_assets" = "$expected_assets"
+          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$release_api" --jq .draft)" = false
+          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$release_api" --jq .prerelease)" = false
+          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "$release_api" --jq .immutable)" = true
+          test "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)" = "$GITHUB_REF_NAME"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)" \
+            = "$GITHUB_SHA"
+
+          cmp "release/$PACKAGE_BASENAME.tar.gz" "$public_dir/$PACKAGE_BASENAME.tar.gz"
+          cmp "release/$PACKAGE_BASENAME.minisig" "$public_dir/$PACKAGE_BASENAME.minisig"
+          python3 scripts/validate_archive.py \
+            --archive "$public_dir/$PACKAGE_BASENAME.tar.gz" \
+            --tag "$GITHUB_REF_NAME"
+          python3 scripts/validate_signature.py \
+            --archive "$public_dir/$PACKAGE_BASENAME.tar.gz" \
+            --signature "$public_dir/$PACKAGE_BASENAME.minisig" \
+            --public-key-file minisign.pub \
+            --tag "$GITHUB_REF_NAME"
+          sha256sum "$public_dir/$PACKAGE_BASENAME.tar.gz"
+
+      - name: Remove a failed draft release
+        if: ${{ failure() && steps.stage_release.outcome == 'success' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_id="${{ steps.stage_release.outputs.release_id }}"
+          if [[ "$release_id" =~ ^[0-9]+$ ]]; then
+            release_api="repos/$GITHUB_REPOSITORY/releases/$release_id"
+            if [[ "$(gh api -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "$release_api" --jq .draft)" == true ]]; then
+              gh api --method DELETE \
+                -H 'X-GitHub-Api-Version: 2026-03-10' \
+                "$release_api" --silent
+            fi
+          fi

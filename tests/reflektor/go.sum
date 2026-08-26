@@ -1,0 +1,6 @@
+github.com/ebitengine/purego v0.10.1 h1:dewVBCBT2GaMu1SrNTYxQhgQBethzfhiwvZiLGP/qyY=
+github.com/ebitengine/purego v0.10.1/go.mod h1:iIjxzd6CiRiOG0UyXP+V1+jWqUXVjPKLAI0mRfJZTmQ=
+github.com/sliverarmory/reflektor v0.0.7 h1:VpH5s9KXM5GOZXtT7Iz5tW1MdMu5YnFL+NnCOT5UtOQ=
+github.com/sliverarmory/reflektor v0.0.7/go.mod h1:+lCyQy0xHVqx6D5nYbcz5XIDVtAGbDMIMU0Yc6Brb1s=
+golang.org/x/sys v0.41.0 h1:Ivj+2Cp/ylzLiEU89QhWblYnOE9zerudt9Ftecq2C6k=
+golang.org/x/sys v0.41.0/go.mod h1:OgkHotnGiDImocRcuBABYBEXf8A9a87e/uXjp9XT3ks=

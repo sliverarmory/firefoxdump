@@ -1,0 +1,151 @@
+name: Reflektor compatibility
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reflektor-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows COFF objects
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned MinGW toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          readonly -a packages=(
+            'binutils-mingw-w64-i686=2.41.90.20240122-1ubuntu1+11.4'
+            'binutils-mingw-w64-x86-64=2.41.90.20240122-1ubuntu1+11.4'
+            'gcc-mingw-w64-base=13.2.0-6ubuntu1+26.1'
+            'gcc-mingw-w64-i686-win32-runtime=13.2.0-6ubuntu1+26.1'
+            'gcc-mingw-w64-i686-win32=13.2.0-6ubuntu1+26.1'
+            'gcc-mingw-w64-x86-64-win32-runtime=13.2.0-6ubuntu1+26.1'
+            'gcc-mingw-w64-x86-64-win32=13.2.0-6ubuntu1+26.1'
+            'mingw-w64-common=11.0.1-3build1'
+            'mingw-w64-i686-dev=11.0.1-3build1'
+            'mingw-w64-x86-64-dev=11.0.1-3build1'
+            'make=4.3-4.1build2'
+          )
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends "${packages[@]}"
+          sudo update-alternatives --set \
+            i686-w64-mingw32-gcc \
+            /usr/bin/i686-w64-mingw32-gcc-win32
+          sudo update-alternatives --set \
+            x86_64-w64-mingw32-gcc \
+            /usr/bin/x86_64-w64-mingw32-gcc-win32
+          for spec in "${packages[@]}"; do
+            package="${spec%%=*}"
+            expected="${spec#*=}"
+            actual="$(dpkg-query --show --showformat='${Version}' "$package")"
+            test "$actual" = "$expected"
+            printf '%s=%s\n' "$package" "$actual"
+          done
+          test "$(i686-w64-mingw32-gcc -dumpmachine)" = i686-w64-mingw32
+          test "$(x86_64-w64-mingw32-gcc -dumpmachine)" = x86_64-w64-mingw32
+
+      - name: Build and inspect repository objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          make all
+          i686-w64-mingw32-objdump -f \
+            bin/firefoxdump.x86.o | \
+            tee "$RUNNER_TEMP/firefoxdump.x86.objdump.txt"
+          x86_64-w64-mingw32-objdump -f \
+            bin/firefoxdump.x64.o | \
+            tee "$RUNNER_TEMP/firefoxdump.x64.objdump.txt"
+          grep -F 'architecture: i386' \
+            "$RUNNER_TEMP/firefoxdump.x86.objdump.txt"
+          grep -F 'architecture: i386:x86-64' \
+            "$RUNNER_TEMP/firefoxdump.x64.objdump.txt"
+          test -s bin/firefoxdump.x86.o
+          test -s bin/firefoxdump.x64.o
+
+      - name: Upload unsigned test objects
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: firefoxdump-reflektor-objects
+          path: bin/firefoxdump.*.o
+          if-no-files-found: error
+          retention-days: 1
+
+  execute:
+    name: Execute Reflektor (${{ matrix.goarch }})
+    needs:
+      - build
+    runs-on: windows-2025
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            object: firefoxdump.x64.o
+          - goarch: "386"
+            object: firefoxdump.x86.o
+    steps:
+      - name: Check out test harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tests/reflektor/go.mod
+          cache-dependency-path: tests/reflektor/go.sum
+
+      - name: Download repository objects
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: firefoxdump-reflektor-objects
+          path: tests/reflektor/artifacts
+
+      - name: Build and execute native-architecture harness
+        shell: pwsh
+        env:
+          CGO_ENABLED: "0"
+          GOARCH: ${{ matrix.goarch }}
+          GOOS: windows
+          GOWORK: "off"
+        run: |
+          $ErrorActionPreference = "Stop"
+          Push-Location tests/reflektor
+          try {
+            $goVersion = go env GOVERSION
+            if ($goVersion -ne "go1.26.6") {
+              throw "Go version is $goVersion, want go1.26.6"
+            }
+            $reflektorVersion = go list -mod=readonly -m `
+              -f '{{.Version}}' github.com/sliverarmory/reflektor
+            if ($reflektorVersion -ne "v0.0.7") {
+              throw "Reflektor version is $reflektorVersion, want v0.0.7"
+            }
+            go mod verify
+            go build -mod=readonly -trimpath -buildvcs=false `
+              -o "$env:RUNNER_TEMP/reflektor-smoke.exe" .
+            & "$env:RUNNER_TEMP/reflektor-smoke.exe" `
+              -object "artifacts/${{ matrix.object }}"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Reflektor smoke test exited with $LASTEXITCODE"
+            }
+          }
+          finally {
+            Pop-Location
+          }
