@@ -1,0 +1,23 @@
+FirefoxDump Armory package
+==========================
+
+This distribution is based on FirefoxDump by mrrobot1o1:
+https://github.com/mrrobot1o1/firefoxdump
+
+Upstream source revision: e5f9a4143598a0363145be5ec3f7c4496cfa9cff
+
+The upstream repository's root LICENSE declares the project under the GNU
+General Public License, version 3. This distribution is licensed under
+GPL-3.0-only; the full license text is in LICENSE.
+
+Armory packaging modifications made in August 2026 include a minimal original
+BOF API header, Reflektor compatibility, read-only data access, bounds checks,
+resource cleanup, and corrected Firefox cookie handling.
+
+Earlier upstream revisions included src/common/base.c, src/common/beacon.h, and
+src/common/bofdefs.h from the TrustedSec CS-Situational-Awareness-BOF project.
+Those files are not included in this distribution. They were replaced with the
+project-specific src/bof_api.h implementation.
+
+The Firefox credential-decryption approach credits the firefox_decrypt project:
+https://github.com/unode/firefox_decrypt

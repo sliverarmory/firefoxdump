@@ -1,5 +1,13 @@
 # Compiled objects
 *.o
+/release/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Local signing material (the public key is minisign.pub and is committed)
+minisign.key
 
 # Editor files
 *.swp

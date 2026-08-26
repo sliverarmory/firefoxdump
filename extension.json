@@ -1,0 +1,43 @@
+{
+  "name": "firefoxdump",
+  "package_name": "firefoxdump",
+  "version": "v0.0.0",
+  "extension_author": "Sliver Armory",
+  "original_author": "mrrobot1o1",
+  "repo_url": "https://github.com/sliverarmory/firefoxdump",
+  "commands": [
+    {
+      "command_name": "firefoxdump",
+      "help": "Extract saved passwords and cookies from Firefox profiles.",
+      "long_help": "Extract Firefox secrets from accessible profiles. With no mode, extract passwords only; use --mode /all for passwords and cookies or --mode /cookies for cookies only. Requires a Sliver client, server, and implant with built-in BOF/Reflektor support. Use only on systems and data you are authorized to access.",
+      "entrypoint": "go",
+      "bof_executor": "reflektor",
+      "init": "",
+      "arguments": [
+        {
+          "name": "mode",
+          "type": "string",
+          "desc": "Extraction mode: omit for passwords, set --mode /all for passwords and cookies, or --mode /cookies for cookies only.",
+          "optional": true,
+          "default": "",
+          "choices": [
+            "/all",
+            "/cookies"
+          ]
+        }
+      ],
+      "files": [
+        {
+          "os": "windows",
+          "arch": "amd64",
+          "path": "firefoxdump.x64.o"
+        },
+        {
+          "os": "windows",
+          "arch": "386",
+          "path": "firefoxdump.x86.o"
+        }
+      ]
+    }
+  ]
+}
