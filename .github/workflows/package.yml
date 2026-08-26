@@ -183,13 +183,11 @@ jobs:
             echo "Tag commit is not contained in origin/main" >&2
             exit 1
           fi
-          immutable_releases="$(gh api \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/immutable-releases" --jq .enabled)"
-          if [[ "$immutable_releases" != true ]]; then
-            echo "Repository immutable releases must be enabled before signing" >&2
-            exit 1
-          fi
+          # The immutable-releases settings endpoint requires repository
+          # administration permission, which GitHub does not grant to a
+          # workflow token. The protected armory-release reviewer verifies
+          # that setting before approving this job; the published release is
+          # then required to report .immutable == true below.
           existing_release_id="$(gh api \
             -H 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
