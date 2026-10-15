@@ -30,3 +30,9 @@ callbacks. It does **not** test NSS loading, SQLite rows, DPAPI, master-password
 handling, or decryption of actual Firefox data. Those operations cannot be
 covered by a package CI job without introducing credential-like fixtures and a
 substantially larger trusted runtime surface.
+
+After this smoke test passes on each Windows runner, the same workflow runs
+`sliver-test-bof` against Sliver session and beacon implants. Its manifest sends
+only a nonempty invalid mode, which the BOF rejects before loading SQLite or
+accessing Firefox profiles. This checks the Sliver/Reflektor BOF and argument
+path without extracting profile data.

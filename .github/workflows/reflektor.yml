@@ -90,7 +90,7 @@ jobs:
     needs:
       - build
     runs-on: windows-2025
-    timeout-minutes: 15
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -149,3 +149,12 @@ jobs:
           finally {
             Pop-Location
           }
+
+      # The smoke harness above refuses to run if any Firefox profile root
+      # exists on this same Windows runner. The manifest also uses an invalid
+      # option that returns before the BOF reads profiles.
+      - name: Exercise Sliver session and beacon BOF execution
+        uses: sliverarmory/sliver-test-bof@b38a09a226bf861a1e56e9dbe07838fe99138582
+        with:
+          manifest: .github/sliver-bof-e2e.yml
+          target: windows/${{ matrix.goarch }}
