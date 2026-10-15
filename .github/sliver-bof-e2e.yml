@@ -1,0 +1,34 @@
+schema: sliver-bof-e2e/v1
+
+sliver:
+  version: b19e383111dbf8b04096806b249f6238274edff4
+
+defaults:
+  bof_executor: reflektor
+  entrypoint: go
+  modes: [session, beacon]
+  command_timeout: 2m
+
+suites:
+  - name: windows-amd64
+    target: {os: windows, arch: amd64}
+    tests:
+      # A nonempty invalid mode returns before SQLite or profile access.
+      - name: invalid-mode
+        object: tests/reflektor/artifacts/firefoxdump.x64.o
+        args:
+          - {type: string, value: sliver-bof-e2e-invalid-mode}
+        expect:
+          output:
+            equals: "[!] Invalid mode. Use --mode /all or --mode /cookies.\n"
+
+  - name: windows-386
+    target: {os: windows, arch: '386'}
+    tests:
+      - name: invalid-mode
+        object: tests/reflektor/artifacts/firefoxdump.x86.o
+        args:
+          - {type: string, value: sliver-bof-e2e-invalid-mode}
+        expect:
+          output:
+            equals: "[!] Invalid mode. Use --mode /all or --mode /cookies.\n"
